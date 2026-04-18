@@ -255,13 +255,15 @@ kubectl get gatewayclass,gateway,httproute,targetgroupconfiguration
 
 ```bash
 # App resources
-kubectl delete -f app1/manifest.yaml
-kubectl delete -f app2/manifest.yaml
+kubectl delete httproute app1-route app2-route
+kubectl delete targetgroupconfiguration app1-tgconfig app2-tgconfig
+kubectl delete svc app1 app2
+kubectl delete deployment app1 app2
 
-# Shared resources — Gateway deletion triggers ALB deletion in AWS
-kubectl delete -f gateway.yaml
-kubectl delete -f loadbalancerconfiguration.yaml
-kubectl delete -f gatewayclass.yaml
+# Gateway — deletion triggers ALB deletion in AWS (wait ~1 min for ALB to be removed)
+kubectl delete gateway my-gateway
+kubectl delete loadbalancerconfiguration my-alb-config
+kubectl delete gatewayclass aws-alb
 
 # LBC
 helm uninstall aws-load-balancer-controller -n kube-system
@@ -273,11 +275,23 @@ eksctl delete iamserviceaccount \
   --cluster roboshop-dev \
   --region us-east-1
 
-# IAM policy
+# IAM policy — delete non-default versions first, then the policy
+for v in $(aws iam list-policy-versions \
+  --policy-arn arn:aws:iam::160885265516:policy/AWSLoadBalancerControllerIAMPolicy \
+  --query 'Versions[?IsDefaultVersion==`false`].VersionId' \
+  --output text); do
+  aws iam delete-policy-version \
+    --policy-arn arn:aws:iam::160885265516:policy/AWSLoadBalancerControllerIAMPolicy \
+    --version-id $v
+done
 aws iam delete-policy \
   --policy-arn arn:aws:iam::160885265516:policy/AWSLoadBalancerControllerIAMPolicy
 
-# CRDs
+# CRDs — patch finalizers first to avoid getting stuck, then delete
 kubectl delete -f https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/refs/heads/main/config/crd/gateway/gateway-crds.yaml
+
+for crd in $(kubectl get crd | grep gateway.networking.k8s.io | awk '{print $1}'); do
+  kubectl patch crd $crd -p '{"metadata":{"finalizers":[]}}' --type=merge
+done
 kubectl delete -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.0/standard-install.yaml
 ```
